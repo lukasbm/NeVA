@@ -4,11 +4,22 @@ from torch.autograd import Variable
 import torch.nn.functional as F
 import torch.nn as nn
 import numpy as np
-from plot import plot_foveation
 
 
 class NeVAWrapper(nn.Module):
-    def __init__(self, downstream_model, criterion, target_function, image_size, foveation_sigma, blur_filter_size, blur_sigma, forgetting, foveation_aggregation=1, device="cuda"):
+    def __init__(
+        self,
+        downstream_model,
+        criterion,
+        target_function,
+        image_size,
+        foveation_sigma,
+        blur_filter_size,
+        blur_sigma,
+        forgetting,
+        foveation_aggregation=1,
+        device="cuda",
+    ):
         super(NeVAWrapper, self).__init__()
 
         self.image_size = image_size
@@ -29,9 +40,14 @@ class NeVAWrapper(nn.Module):
     def forward(self, x, foveation_positions):
         if self.internal_representation is None:
             raise Exception(
-                "First set internal representation with function: initialize_scanpath_generation()")
+                "First set internal representation with function: initialize_scanpath_generation()"
+            )
         foveation_area = get_foveation(
-            self.foveation_aggregation, self.foveation_sigma, self.image_size, foveation_positions)
+            self.foveation_aggregation,
+            self.foveation_sigma,
+            self.image_size,
+            foveation_positions,
+        )
         current_foveation_area = self.internal_representation + foveation_area
         blurring_mask = torch.clip(self.ones - current_foveation_area, 0, 1)
         applied_blur = self.blur * blurring_mask
@@ -42,12 +58,22 @@ class NeVAWrapper(nn.Module):
 
     def initialize_scanpath_generation(self, x, batch_size):
         self.internal_representation = torch.zeros(
-            (batch_size, 1, self.image_size, self.image_size), device='cuda')
+            (batch_size, 1, self.image_size, self.image_size), device="cuda"
+        )
         self.ones = torch.ones(
-            (batch_size, 1, self.image_size, self.image_size), device=self.device)
+            (batch_size, 1, self.image_size, self.image_size), device=self.device
+        )
         self.blur = calculate_blur(x, self.blur_filter_size, self.blur_sigma)
 
-    def run_optimization(self, x, labels, scanpath_length, opt_iterations, learning_rate, random_restarts=False):
+    def run_optimization(
+        self,
+        x,
+        labels,
+        scanpath_length,
+        opt_iterations,
+        learning_rate,
+        random_restarts=False,
+    ):
         batch_size = x.size(0)
         targets = self.target_function(x, labels)
         self.initialize_scanpath_generation(x, batch_size)
@@ -57,11 +83,14 @@ class NeVAWrapper(nn.Module):
 
         for step in range(scanpath_length):
             foveation_pos = torch.zeros(
-                (batch_size, 2, 1, 1), device='cuda', requires_grad=True)
+                (batch_size, 2, 1, 1), device="cuda", requires_grad=True
+            )
             best_foveation_pos = torch.zeros(
-                (batch_size, 2, 1, 1), device='cuda')  # * 2 - 1
+                (batch_size, 2, 1, 1), device="cuda"
+            )  # * 2 - 1
             best_loss = torch.ones(
-                (batch_size), device='cuda', dtype=torch.float16) * float("inf")
+                (batch_size), device="cuda", dtype=torch.float16
+            ) * float("inf")
 
             for _ in range(opt_iterations):
                 output = self(x, foveation_pos)
@@ -79,22 +108,34 @@ class NeVAWrapper(nn.Module):
                 if torch.sum(~idxs) > 0:
                     # randomize positions that are worse than in previous optimization step
                     if random_restarts:
-                        foveation_pos.data[~idxs] = torch.rand_like(
-                            best_foveation_pos.data[~idxs]) * 2 - 1
+                        foveation_pos.data[~idxs] = (
+                            torch.rand_like(best_foveation_pos.data[~idxs]) * 2 - 1
+                        )
                     else:
-                        foveation_pos.data[~idxs] += torch.rand_like(
-                            best_foveation_pos.data[~idxs]) * learning_rate - learning_rate / 2
+                        foveation_pos.data[~idxs] += (
+                            torch.rand_like(best_foveation_pos.data[~idxs])
+                            * learning_rate
+                            - learning_rate / 2
+                        )
             # Update internal representation
             current_foveation_mask = get_foveation(
-                self.foveation_aggregation, self.foveation_sigma, self.image_size, best_foveation_pos)
+                self.foveation_aggregation,
+                self.foveation_sigma,
+                self.image_size,
+                best_foveation_pos,
+            )
             self.internal_representation = (
-                self.internal_representation * self.forgetting + current_foveation_mask).detach()
+                self.internal_representation * self.forgetting + current_foveation_mask
+            ).detach()
             blur_mask = self.ones - self.internal_representation
             # Save positions in array
             scanpath.append(best_foveation_pos.detach())
             # Loss history
             loss_history.append(loss.detach())
-        return torch.stack(scanpath, 1).squeeze(), torch.stack(loss_history, 1).squeeze()
+        return (
+            torch.stack(scanpath, 1).squeeze(),
+            torch.stack(loss_history, 1).squeeze(),
+        )
 
 
 def calc_gaussian(a, std_dev, image_size, positions):
@@ -102,7 +143,7 @@ def calc_gaussian(a, std_dev, image_size, positions):
     xa, ya = create_grid(B, image_size)
     xa = xa - positions[:, 0]
     ya = ya - positions[:, 1]
-    distance = (xa**2 + ya**2)
+    distance = xa**2 + ya**2
     g = a * torch.exp(-distance / std_dev)
     return g.view(B, 1, image_size, image_size)
 
@@ -118,15 +159,19 @@ def create_grid(batch_size, size):
 def calculate_blur(images, blur_filter_size, sigma=5):
     def gaussian(window_size, sigma):
         gauss = torch.Tensor(
-            [exp(-(x - window_size // 2) ** 2 / float(2 * sigma ** 2)) for x in range(window_size)])
+            [
+                exp(-((x - window_size // 2) ** 2) / float(2 * sigma**2))
+                for x in range(window_size)
+            ]
+        )
         return gauss / gauss.sum()
 
     def create_window(window_size, channel, sigma):
         _1D_window = gaussian(window_size, sigma).unsqueeze(1)
-        _2D_window = _1D_window.mm(
-            _1D_window.t()).float().unsqueeze(0).unsqueeze(0)
-        window = Variable(_2D_window.expand(
-            channel, 1, window_size, window_size).contiguous())
+        _2D_window = _1D_window.mm(_1D_window.t()).float().unsqueeze(0).unsqueeze(0)
+        window = Variable(
+            _2D_window.expand(channel, 1, window_size, window_size).contiguous()
+        )
         return window
 
     window = create_window(blur_filter_size, 3, sigma).cuda()
@@ -138,6 +183,5 @@ def calculate_blur(images, blur_filter_size, sigma=5):
 
 
 def get_foveation(foveation_aggregation, foveation_sigma, image_size, positions):
-    mask = calc_gaussian(foveation_aggregation,
-                         foveation_sigma, image_size, positions)
+    mask = calc_gaussian(foveation_aggregation, foveation_sigma, image_size, positions)
     return mask
